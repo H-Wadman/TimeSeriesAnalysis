@@ -51,7 +51,7 @@ def my_filter(A: int | list[int], C: int | list[int], y):
     assert model is not None
     e_hat = signal.lfilter(model.A, model.C, y)
     na = len(model.A) - 1
-    assert na > 0
+    assert na >= 0
     return e_hat[na:]
 
 def verify_white_and_normal(model_residual: TimeSeries):
@@ -66,7 +66,7 @@ def verify_white_and_normal(model_residual: TimeSeries):
     if is_AP_normal(pacfEst):
         print("The PACF is deemed normal according to D'Agostino-Pearson")
     else:
-        print("The ACF is *NOT* deemed normal according to D'Agostino-Pearson")
+        print("The PACF is *NOT* deemed normal according to D'Agostino-Pearson")
 
 
 def is_AP_normal(ts: TimeSeries):
