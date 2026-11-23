@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from numpy.typing import ArrayLike
 from scipy import signal
 from tsa_lth.modelling import estimateARMA
+from tsa_lth.analysis import acf, pacf
+from tsa_lth.tests import check_if_normal, whiteness_test, normaltest
 
 type TimeSeries = ArrayLike
 
@@ -27,7 +29,7 @@ def plot_acf(ts: TimeSeries, max_lag = None):
         print("Warning: ACF will be calculated for lags larger than N/4; this is not recommended, see p. 47", file=sys.stderr)
 
 
-def my_filter(A, C, y):
+def my_filter(A: int | list[int], C: int | list[int], y):
     """Obtain the residual of ARMA filtering a process.
 
     Takes in a dataset as well as a specification of the AR and MA model 
@@ -45,11 +47,32 @@ def my_filter(A, C, y):
     Returns:
         The error residual with initial samples removed.
     """
-    model = estimateARMA(y, A, C, plot=False)
+    model = estimateARMA(y, A, C, plot=False) #type: ignore
     assert model is not None
     e_hat = signal.lfilter(model.A, model.C, y)
     na = len(model.A) - 1
     assert na > 0
     return e_hat[na:]
+
+def verify_white_and_normal(model_residual: TimeSeries):
+    whiteness_test(model_residual)
+    acfEst = cast(ArrayLike, acf(model_residual, "auto", includeZeroLag=False))
+    if is_AP_normal(acfEst):
+        print("The ACF is deemed normal according to D'Agostino-Pearson")
+    else:
+        print("The ACF is *NOT* deemed normal according to D'Agostino-Pearson")
+    pacfEst = pacf(model_residual, "auto", includeZeroLag=False)
+
+    if is_AP_normal(pacfEst):
+        print("The PACF is deemed normal according to D'Agostino-Pearson")
+    else:
+        print("The ACF is *NOT* deemed normal according to D'Agostino-Pearson")
+
+
+def is_AP_normal(ts: TimeSeries):
+    _, p = normaltest(ts)
+    # We use a 95% confidence
+    deemed_normal = p > 0.05
+    return deemed_normal
 
 def plot_pacf(): ...
