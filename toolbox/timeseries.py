@@ -1,13 +1,15 @@
 import sys
 from collections.abc import Sized
 from enum import Enum
-from typing import cast
+from typing import cast, NamedTuple
 from dataclasses import dataclass
 from collections.abc import Callable
 
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
 import tsa_lth
 from numpy.typing import ArrayLike
+import numpy as np
 from scipy import signal
 from tsa_lth.analysis import acf, pacf
 from tsa_lth.modelling import estimateARMA
@@ -21,6 +23,25 @@ def plot_timeseries(title, x_label="x", y_label="y"):
     plt.title(title)
     plt.grid(True, alpha=0.3)
     plt.plot()
+
+
+def plot_confidence_interval(n: int, max_lag: int, ax: Axes | None = None):
+    """Plot approximate 95% correlation bounds over lags -max_lag to max_lag.
+
+    Args:
+        n: Number of observations used to calculate the correlation.
+        max_lag: Largest absolute lag shown.
+        ax: Axes to draw on; defaults to the current pyplot axes.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if max_lag < 0:
+        raise ValueError("max_lag must be non-negative")
+
+    plot = plt if ax is None else ax
+    bound = 2 / np.sqrt(n)
+    plot.plot([-max_lag, max_lag], [bound, bound], "r--")
+    plot.plot([-max_lag, max_lag], [-bound, -bound], "r--")
 
 
 def plot_acf(ts: TimeSeries, max_lag = None):
@@ -58,19 +79,26 @@ def my_filter(A: int | list[int], C: int | list[int], y):
     assert na >= 0
     return e_hat[na:]
 
-class WhitenessTest(Enum):
-    @dataclass
-    class WhitenessInfo:
-        name: str
-        # test: Callable[[TimeSeries, int, float], tuple[bool, float, float]]
-        test: Callable
-    LJUNG_BOX = WhitenessInfo("Ljung-Box-Pierce", tsa_lth.tests.lbp_test)
-    MCLEOD_LI = ("McLeod-Li", tsa_lth.tests.ml_test)
-    MONTI = ("Monti", tsa_lth.tests.monti_test)
-    SIGN_CHANGE = ("Sign change", sign_change_test)
+def sign_change_test(data: TimeSeries, k: int, alpha: float) -> tuple[bool, float, float]:
+    # Credit for code snippet below to Filipp Lernbo, taken from tsa_lth.tests
+    n_ratio, confInt = tsa_lth.tests.count_sign_changes(data, 1-alpha)
+    is_white = confInt[0] < n_ratio < confInt[1]
+    print(f"  Sign change test:      {is_white} (white if {n_ratio:.2f} in [{confInt[0]:.2f},{confInt[1]:.2f}])")
 
-def sign_change_test():
-    ...
+    return (is_white, n_ratio, confInt)
+    
+
+class WhitenessTest(Enum):
+    type TestFunction = Callable[[TimeSeries], tuple[bool, float, float | tuple[float, float]]]
+    class WhitenessInfo(NamedTuple):
+        name: str
+        test: WhitenessTest.TestFunction
+
+
+    LJUNG_BOX = WhitenessInfo("Ljung-Box-Pierce", cast(TestFunction, tsa_lth.tests.lbp_test))
+    MCLEOD_LI = WhitenessInfo("McLeod-Li", cast(TestFunction, tsa_lth.tests.ml_test))
+    MONTI = WhitenessInfo("Monti", cast(TestFunction, tsa_lth.tests.monti_test))
+    SIGN_CHANGE = WhitenessInfo("Sign change", cast(TestFunction, sign_change_test))
 
 
 class NormalityTest(Enum):
@@ -81,7 +109,15 @@ def verify_white_and_normal(
         whiteness_test=WhitenessTest.MONTI,
         normal_test=NormalityTest.DAGOSTINO_PEARSON
     ):
-    tsa_lth.tests.whiteness_test(model_residual)
+    white_name, white_test = whiteness_test.value
+    is_white, *_ = white_test(model_residual)
+
+    if is_white:
+        print(f"The model is white according to the {white_name} test")
+    else:
+        print(f"The model is *NOT* white according to the {white_name} test")
+
+
     acfEst = cast(ArrayLike, acf(model_residual, "auto", includeZeroLag=False))
     if is_AP_normal(acfEst):
         print("The ACF is deemed normal according to D'Agostino-Pearson")
@@ -93,6 +129,8 @@ def verify_white_and_normal(
         print("The PACF is deemed normal according to D'Agostino-Pearson")
     else:
         print("The PACF is *NOT* deemed normal according to D'Agostino-Pearson")
+
+
 
 
 def is_AP_normal(ts: TimeSeries, alpha=0.05):
