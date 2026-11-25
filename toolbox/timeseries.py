@@ -1,19 +1,17 @@
 import sys
-from collections.abc import Sized
+from collections.abc import Callable, Sized
 from enum import Enum
-from typing import cast, NamedTuple
-from dataclasses import dataclass
-from collections.abc import Callable
+from typing import NamedTuple, cast
 
 import matplotlib.pyplot as plt
-from matplotlib.axes import Axes
-import tsa_lth
-from numpy.typing import ArrayLike
 import numpy as np
+import tsa_lth
+from matplotlib.axes import Axes
+from numpy.typing import ArrayLike
 from scipy import signal
 from tsa_lth.analysis import acf, pacf
 from tsa_lth.modelling import estimateARMA
-from tsa_lth.tests import check_if_normal, monti_test, normaltest
+from tsa_lth.tests import normaltest
 
 type TimeSeries = ArrayLike
 
@@ -44,22 +42,25 @@ def plot_confidence_interval(n: int, max_lag: int, ax: Axes | None = None):
     plot.plot([-max_lag, max_lag], [-bound, -bound], "r--")
 
 
-def plot_acf(ts: TimeSeries, max_lag = None):
+def plot_acf(ts: TimeSeries, max_lag=None):
     ts_len = len(cast(Sized, ts))
     max_recommended_lags = ts_len // 4
 
     if max_lag is None:
-        max_lag = max_recommended_lags 
+        max_lag = max_recommended_lags
     elif max_lag > max_recommended_lags:
-        print("Warning: ACF will be calculated for lags larger than N/4; this is not recommended, see p. 47", file=sys.stderr)
+        print(
+            "Warning: ACF will be calculated for lags larger than N/4; this is not recommended, see p. 47",
+            file=sys.stderr,
+        )
 
 
 def my_filter(A: int | list[int], C: int | list[int], y):
     """Obtain the residual of ARMA filtering a process.
 
-    Takes in a dataset as well as a specification of the AR and MA model 
+    Takes in a dataset as well as a specification of the AR and MA model
     components. The provided ARMA model is then used or calculated and is then
-    used to filter the data in reverse, in order to compute the error residual 
+    used to filter the data in reverse, in order to compute the error residual
     and then discarding initial samples to get rid of initialisation effects.
 
     Args:
@@ -72,30 +73,39 @@ def my_filter(A: int | list[int], C: int | list[int], y):
     Returns:
         The error residual with initial samples removed.
     """
-    model = estimateARMA(y, A, C, plot=False) #type: ignore
+    model = estimateARMA(y, A, C, plot=False)  # type: ignore
     assert model is not None
     e_hat = signal.lfilter(model.A, model.C, y)
     na = len(model.A) - 1
     assert na >= 0
     return e_hat[na:]
 
-def sign_change_test(data: TimeSeries, k: int, alpha: float) -> tuple[bool, float, float]:
+
+def sign_change_test(
+    data: TimeSeries, k: int, alpha: float
+) -> tuple[bool, float, float]:
     # Credit for code snippet below to Filipp Lernbo, taken from tsa_lth.tests
-    n_ratio, confInt = tsa_lth.tests.count_sign_changes(data, 1-alpha)
+    n_ratio, confInt = tsa_lth.tests.count_sign_changes(data, 1 - alpha)
     is_white = confInt[0] < n_ratio < confInt[1]
-    print(f"  Sign change test:      {is_white} (white if {n_ratio:.2f} in [{confInt[0]:.2f},{confInt[1]:.2f}])")
+    print(
+        f"  Sign change test:      {is_white} (white if {n_ratio:.2f} in [{confInt[0]:.2f},{confInt[1]:.2f}])"
+    )
 
     return (is_white, n_ratio, confInt)
-    
+
 
 class WhitenessTest(Enum):
-    type TestFunction = Callable[[TimeSeries], tuple[bool, float, float | tuple[float, float]]]
+    type TestFunction = Callable[
+        [TimeSeries], tuple[bool, float, float | tuple[float, float]]
+    ]
+
     class WhitenessInfo(NamedTuple):
         name: str
         test: WhitenessTest.TestFunction
 
-
-    LJUNG_BOX = WhitenessInfo("Ljung-Box-Pierce", cast(TestFunction, tsa_lth.tests.lbp_test))
+    LJUNG_BOX = WhitenessInfo(
+        "Ljung-Box-Pierce", cast(TestFunction, tsa_lth.tests.lbp_test)
+    )
     MCLEOD_LI = WhitenessInfo("McLeod-Li", cast(TestFunction, tsa_lth.tests.ml_test))
     MONTI = WhitenessInfo("Monti", cast(TestFunction, tsa_lth.tests.monti_test))
     SIGN_CHANGE = WhitenessInfo("Sign change", cast(TestFunction, sign_change_test))
@@ -104,11 +114,12 @@ class WhitenessTest(Enum):
 class NormalityTest(Enum):
     DAGOSTINO_PEARSON = "D'agostino-Pearson"
 
+
 def verify_white_and_normal(
-        model_residual: TimeSeries,
-        whiteness_test=WhitenessTest.MONTI,
-        normal_test=NormalityTest.DAGOSTINO_PEARSON
-    ):
+    model_residual: TimeSeries,
+    whiteness_test=WhitenessTest.MONTI,
+    normal_test=NormalityTest.DAGOSTINO_PEARSON,
+):
     white_name, white_test = whiteness_test.value
     is_white, *_ = white_test(model_residual)
 
@@ -116,7 +127,6 @@ def verify_white_and_normal(
         print(f"The model is white according to the {white_name} test")
     else:
         print(f"The model is *NOT* white according to the {white_name} test")
-
 
     acfEst = cast(ArrayLike, acf(model_residual, "auto", includeZeroLag=False))
     if is_AP_normal(acfEst):
@@ -129,8 +139,6 @@ def verify_white_and_normal(
         print("The PACF is deemed normal according to D'Agostino-Pearson")
     else:
         print("The PACF is *NOT* deemed normal according to D'Agostino-Pearson")
-
-
 
 
 def is_AP_normal(ts: TimeSeries, alpha=0.05):
@@ -147,5 +155,6 @@ def is_AP_normal(ts: TimeSeries, alpha=0.05):
     # We use a 95% confidence
     deemed_normal = p > 0.05
     return deemed_normal
+
 
 def plot_pacf(): ...
