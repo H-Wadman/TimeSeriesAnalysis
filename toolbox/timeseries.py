@@ -7,13 +7,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tsa_lth
 from matplotlib.axes import Axes
-from numpy.typing import ArrayLike
 from scipy import signal
 from tsa_lth.analysis import acf, pacf
 from tsa_lth.modelling import estimateARMA
 from tsa_lth.tests import normaltest
 
-type TimeSeries = ArrayLike
+type TimeSeries = np.ndarray
 
 
 def plot_timeseries(title, x_label="x", y_label="y"):
@@ -128,7 +127,7 @@ def verify_white_and_normal(
     else:
         print(f"The model is *NOT* white according to the {white_name} test")
 
-    acfEst = cast(ArrayLike, acf(model_residual, "auto", includeZeroLag=False))
+    acfEst = np.array(acf(model_residual, "auto", includeZeroLag=False))
     if is_AP_normal(acfEst):
         print("The ACF is deemed normal according to D'Agostino-Pearson")
     else:
