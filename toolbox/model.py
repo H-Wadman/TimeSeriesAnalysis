@@ -14,10 +14,10 @@ from tsa_lth.modelling import estimateARMA, polydiv
 
 class ModelStep(ABC):
     @abstractmethod
-    def inverse(self, ts: TimeSeries) -> TimeSeries: ...
+    def add_structure(self, ts: TimeSeries) -> TimeSeries: ...
 
     @abstractmethod
-    def forward(self, ts: TimeSeries) -> TimeSeries: ...
+    def remove_structure(self, ts: TimeSeries) -> TimeSeries: ...
 
     def __or__(self, step: ModelStep) -> CompoundStep:
         return CompoundStep([self, step])
@@ -28,42 +28,56 @@ class CompoundStep(ModelStep):
         self._steps = steps
 
     @override
-    def forward(self, ts: TimeSeries) -> TimeSeries:
+    def remove_structure(self, ts: TimeSeries) -> TimeSeries:
         for step in self._steps:
-            ts = step.forward(ts)
+            ts = step.remove_structure(ts)
 
         return ts
 
     @override
-    def inverse(self, ts: TimeSeries) -> TimeSeries:
+    def add_structure(self, ts: TimeSeries) -> TimeSeries:
         for step in self._steps:
-            ts = step.inverse(ts)
+            ts = step.add_structure(ts)
 
         return ts
 
 
+# Class meant primarily for nominal typing / documentation
 class Transform(ModelStep):
-    def __init__(self):
-        raise NotImplementedError()
+    @abstractmethod
+    def transform_data(self, ts: TimeSeries) -> TimeSeries:
+        ...
+
+    @abstractmethod
+    def undo_transform(self, ts:TimeSeries) -> TimeSeries:
+        ...
+
+    @override
+    def remove_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.transform_data(ts)
+
+    @override
+    def add_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.undo_transform(ts)
 
 
 class Log(Transform):
     @override
-    def forward(self, ts: TimeSeries) -> TimeSeries:
+    def transform_data(self, ts: TimeSeries) -> TimeSeries:
         return np.log(ts)
 
     @override
-    def inverse(self, ts: TimeSeries) -> TimeSeries:
+    def undo_transform(self, ts: TimeSeries) -> TimeSeries:
         return np.exp(ts)
 
 
 class Sqrt(Transform):
     @override
-    def forward(self, ts: TimeSeries) -> TimeSeries:
+    def transform_data(self, ts: TimeSeries) -> TimeSeries:
         return np.sqrt(ts)
 
     @override
-    def inverse(self, ts: TimeSeries) -> TimeSeries:
+    def undo_transform(self, ts: TimeSeries) -> TimeSeries:
         return ts**2
 
 
@@ -73,14 +87,72 @@ class Transforms(Enum):
 
 
 class Trend(ModelStep):
+    @abstractmethod
+    def detrend(self, ts: TimeSeries) -> TimeSeries:
+        ...
+
+    @abstractmethod
+    def add_trend(self, ts: TimeSeries) -> TimeSeries:
+        ...
+
+    @override
+    def remove_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.detrend(ts)
+
+    @override
+    def add_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.add_trend(ts)
+
+
+class LeastSquares(Trend):
     def __init__(self):
-        raise NotImplementedError()
+        self._trend: TimeSeries | None = None
+
+    @override
+    def detrend(self, ts: TimeSeries) -> TimeSeries:
+        N = len(ts)
+        X = np.column_stack([np.ones(N), np.arange(1, N+1)])
+        ls_linear_trend = np.linalg.inv(X.T @ X) @ X.T @ ts
+        self._trend = ls_linear_trend
+        return ts - ls_linear_trend
+
+    @override
+    def add_trend(self, ts:TimeSeries) -> TimeSeries:
+        return ts + self._trend
 
 
 class Season(ModelStep):
-    def __init__(self):
-        raise NotImplementedError()
+    @abstractmethod
+    def remove_season(self, ts: TimeSeries) -> TimeSeries:
+        ...
 
+    @abstractmethod
+    def add_season_back(self, ts: TimeSeries) -> TimeSeries:
+        ...
+
+    @override
+    def remove_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.remove_season(ts)
+
+    @override
+    def add_structure(self, ts: TimeSeries) -> TimeSeries:
+        return self.add_season_back(ts)
+
+class Nabla(Season):
+    def __init__(self, s: int):
+        assert s >= 1
+        self.s = s
+
+    @override
+    def remove_season(self, ts: TimeSeries) -> TimeSeries:
+        A = np.array([1] + [0] * (self.s - 1) + [-1])
+        ts_s = np.array(scipy.signal.lfilter(A, [1], ts))[self.s:]
+
+        return ts_s
+
+    @override
+    def add_season_back(self, ts:TimeSeries) -> TimeSeries:
+        ...
 
 class SumOfSine(ModelStep):
     def __init__(self):
@@ -105,6 +177,9 @@ type StationaryModel = ARMA | SumOfSine | ARMAX | BoxJenkins
 
 
 class Model:
+    """DOCSTRING TBD - But only undo a transformation if it was the last
+    transformation done; some of the transformations are stateful.
+    """
     UNKNOWN = sentinel("UNKNOWN")
 
     type Unknown = UNKNOWN.__class__
@@ -140,13 +215,13 @@ class Model:
         if self.trend is not None:
             res = self.detrend_or_suggest(ts)
 
-    def predict(self, ts: TimeSeries) -> TimeSeries: ...
+    def predict(self, steps: int, ts: TimeSeries) -> TimeSeries: ...
 
     def _any_is_unknown(self): ...
 
     def test(self, ts: TimeSeries): ...
 
-    def inv_transform_or_suggest(self, ts: TimeSeries):
+    def inv_transform_or_suggest(self, ts: TimeSeries) -> TimeSeries | Model.Unknown:
         assert self.transform is not None
         if self.transform == Model.Unknown:
             # TODO: Plot Box-Cox plot and also print maximum value found, but
@@ -162,19 +237,24 @@ class Model:
             return Model.UNKNOWN
         else:
             assert isinstance(self.transform, Transform)
-            return self.transform.inverse(ts)
+            return self.transform.add_structure(ts)
 
-    def detrend_or_suggest(self, ts: TimeSeries):
+    def detrend_or_suggest(self, ts: TimeSeries)-> TimeSeries | Model.Unknown:
         assert self.trend is not None
         if self.trend == Model.UNKNOWN:
             # TODO: Plot model with linear trend found by LSE and list other
             # possibilities (PEM, ...,)
+            N = len(ts)
+            X = np.column_stack([np.ones(N), np.arange(1, N+1)])
+            ls_linear_trend = np.linalg.inv(X.T @ X) @ X.T @ ts
+
             plt.figure()
             plt.title("Detrend study (LSE plotted)")
             plt.grid(True, alpha=0.3)
-            plt.plot()
+            plt.plot(ts)
+            plt.plot(ls_linear_trend)
+            return Model.UNKNOWN
 
-            raise NotImplementedError()
         else:
             assert isinstance(self.trend, Trend)
 
@@ -240,7 +320,7 @@ class ARMA(ModelStep):
         if seed is not None:
             self.generator = np.random.default_rng(seed)
         e = self.generator.normal(scale=np.sqrt(sigma2), size=N)
-        y = signal.lfilter(self.C, self._A, e)
+        y = cast(TimeSeries, signal.lfilter(self.C, self._A, e))
         return y[buffer:]
 
     def plot_poles_and_zeros(self):
@@ -259,7 +339,7 @@ class ARMA(ModelStep):
         Returns:
             The residual error as a time series
         """
-        e_hat = signal.lfilter(self._A, self.C, ts)
+        e_hat = cast(TimeSeries, signal.lfilter(self._A, self.C, ts))
         order_a = len(self._A) - 1
         assert order_a >= 0
         return e_hat[order_a:]
